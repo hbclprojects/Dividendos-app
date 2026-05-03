@@ -34,18 +34,53 @@ LAYOUT_BASE = dict(
     yaxis=dict(gridcolor="#1f3460"),
 )
 
+
+def parse_num(val):
+    """
+    Converte texto para float aceitando qualquer formato decimal:
+      - Vírgula decimal:   0,23545  →  0.23545
+      - Ponto decimal:     0.23545  →  0.23545
+      - BR com milhar:   1.234,56   →  1234.56
+      - US com milhar:   1,234.56   →  1234.56
+    """
+    if val is None:
+        return None
+    s = str(val).strip().replace(" ", "")
+    if s == "" or s == "nan":
+        return None
+    if "," in s and "." in s:
+        # Descobre qual é o separador decimal pelo último a aparecer
+        if s.rfind(",") > s.rfind("."):
+            # Vírgula é decimal: "1.234,56" → "1234.56"
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # Ponto é decimal: "1,234.56" → "1234.56"
+            s = s.replace(",", "")
+    else:
+        # Só um separador: trata como decimal
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 st.markdown("# 💼 Portfólio e Projeção de Renda")
 st.markdown("Cadastre suas posições e visualize a trajetória até a meta de **$1.000/mês** em dividendos.")
 
 # ── Tabela de Portfólio ───────────────────────────────────────────────────────
 st.markdown('<div class="section-title">📊 Suas Posições</div>', unsafe_allow_html=True)
-st.markdown("Edite a tabela abaixo diretamente. **Dividendo Anual/Ação** = dividendo anual por ação (USD).")
+st.markdown(
+    "Edite a tabela abaixo diretamente. "
+    "**Aceita vírgula ou ponto como decimal** — ex: `0,23545` ou `0.23545`."
+)
 
+# Todas as colunas numéricas são TEXT para aceitar vírgula como separador decimal
 portfolio_inicial = pd.DataFrame({
-    "Ticker":              ["JNJ",  "KO",   "PG",   "ABBV", "O"],
-    "Ações":               [10,     20,     8,      15,     25],
-    "Custo/Ação (USD)":    [155.0,  60.0,   145.0,  175.0,  55.0],
-    "Div. Anual/Ação (USD)": [4.76, 1.94,   3.76,   5.92,   3.12],
+    "Ticker":                ["JNJ",    "KO",    "PG",     "ABBV",   "O"],
+    "Ações":                 ["10",     "20",    "8",      "15",     "25"],
+    "Custo/Ação (USD)":      ["155.00", "60.00", "145.00", "175.00", "55.00"],
+    "Div. Anual/Ação (USD)": ["4.76",   "1.94",  "3.76",   "5.92",   "3.12"],
 })
 
 portfolio_df = st.data_editor(
@@ -53,10 +88,21 @@ portfolio_df = st.data_editor(
     num_rows="dynamic",
     use_container_width=True,
     column_config={
-        "Ticker":              st.column_config.TextColumn("Ticker", width="small"),
-        "Ações":               st.column_config.NumberColumn("Nº de Ações", min_value=0, step=1),
-        "Custo/Ação (USD)":    st.column_config.NumberColumn("Custo/Ação (USD)", min_value=0.0, format="%.2f"),
-        "Div. Anual/Ação (USD)": st.column_config.NumberColumn("Div. Anual/Ação (USD)", min_value=0.0, format="%.4f"),
+        "Ticker":                st.column_config.TextColumn(
+            "Ticker", width="small"
+        ),
+        "Ações":                 st.column_config.TextColumn(
+            "Nº de Ações",
+            help="Aceita vírgula ou ponto. Ex: 10  |  0,23545  |  1.5",
+        ),
+        "Custo/Ação (USD)":      st.column_config.TextColumn(
+            "Custo/Ação (USD)",
+            help="Aceita vírgula ou ponto. Ex: 155,50  |  155.50",
+        ),
+        "Div. Anual/Ação (USD)": st.column_config.TextColumn(
+            "Div. Anual/Ação (USD)",
+            help="Aceita vírgula ou ponto. Ex: 4,76  |  4.76",
+        ),
     },
     key="portfolio_editor",
 )
@@ -84,18 +130,44 @@ with p_col3:
 calcular = st.button("📈 Calcular Projeção", type="primary")
 
 # ── Cálculos do Portfólio ─────────────────────────────────────────────────────
-df_port = portfolio_df.dropna(subset=["Ticker", "Ações", "Custo/Ação (USD)", "Div. Anual/Ação (USD)"])
-df_port = df_port[df_port["Ações"] > 0]
+df_port = portfolio_df.copy()
+
+# Converte colunas de texto para float (aceita vírgula e ponto)
+df_port["_acoes"] = df_port["Ações"].apply(parse_num)
+df_port["_custo"] = df_port["Custo/Ação (USD)"].apply(parse_num)
+df_port["_div"]   = df_port["Div. Anual/Ação (USD)"].apply(parse_num)
+
+# Remove linhas sem Ticker ou com valores inválidos/zerados
+df_port = df_port[df_port["Ticker"].notna() & (df_port["Ticker"].str.strip() != "")]
+df_port = df_port.dropna(subset=["_acoes", "_custo", "_div"])
+df_port = df_port[df_port["_acoes"] > 0]
+
+# Avisa sobre linhas com valores inválidos
+linhas_invalidas = portfolio_df[
+    portfolio_df["Ticker"].notna() &
+    (portfolio_df["Ticker"].str.strip() != "") &
+    (
+        portfolio_df["Ações"].apply(parse_num).isna() |
+        portfolio_df["Custo/Ação (USD)"].apply(parse_num).isna() |
+        portfolio_df["Div. Anual/Ação (USD)"].apply(parse_num).isna()
+    )
+]
+if not linhas_invalidas.empty:
+    tickers_inv = ", ".join(linhas_invalidas["Ticker"].dropna().tolist())
+    st.warning(f"⚠️ Valores inválidos ignorados em: **{tickers_inv}**. Verifique os números digitados.")
 
 if df_port.empty:
     st.warning("Adicione ao menos uma posição válida na tabela acima.")
     st.stop()
 
-df_port = df_port.copy()
-df_port["Valor Posição (USD)"] = df_port["Ações"] * df_port["Custo/Ação (USD)"]
-df_port["Renda Anual (USD)"]   = df_port["Ações"] * df_port["Div. Anual/Ação (USD)"]
+df_port["Valor Posição (USD)"] = df_port["_acoes"] * df_port["_custo"]
+df_port["Renda Anual (USD)"]   = df_port["_acoes"] * df_port["_div"]
 df_port["Renda Mensal (USD)"]  = df_port["Renda Anual (USD)"] / 12
-df_port["Div. Yield (%)"]      = (df_port["Div. Anual/Ação (USD)"] / df_port["Custo/Ação (USD)"] * 100).round(2)
+df_port["Div. Yield (%)"]      = (
+    (df_port["_div"] / df_port["_custo"] * 100)
+    .where(df_port["_custo"] > 0)
+    .round(2)
+)
 
 total_valor        = df_port["Valor Posição (USD)"].sum()
 total_renda_anual  = df_port["Renda Anual (USD)"].sum()
@@ -108,14 +180,22 @@ st.markdown('<div class="section-title">💰 Renda Atual do Portfólio</div>', u
 m1, m2, m3, m4, m5 = st.columns(5)
 
 def _mbox(label, val, cor="#fafafa"):
-    return f'<div class="metric-box"><div class="metric-label">{label}</div><div class="metric-value" style="color:{cor};">{val}</div></div>'
+    return (
+        f'<div class="metric-box">'
+        f'<div class="metric-label">{label}</div>'
+        f'<div class="metric-value" style="color:{cor};">{val}</div>'
+        f'</div>'
+    )
 
-m1.markdown(_mbox("Valor Total do Portfólio", fmt_moeda(total_valor)), unsafe_allow_html=True)
-m2.markdown(_mbox("Renda Anual de Dividendos", fmt_moeda(total_renda_anual), "#00d4aa"), unsafe_allow_html=True)
-m3.markdown(_mbox("Renda Mensal de Dividendos", fmt_moeda(total_renda_mensal), "#00d4aa"), unsafe_allow_html=True)
-m4.markdown(_mbox("Meta Mensal", fmt_moeda(META_MENSAL), "#f0a500"), unsafe_allow_html=True)
-m5.markdown(_mbox("Progresso para a Meta", f"{progresso*100:.1f}%", "#00d4aa" if progresso >= 1 else "#f0a500"),
-            unsafe_allow_html=True)
+m1.markdown(_mbox("Valor Total do Portfólio",    fmt_moeda(total_valor)),         unsafe_allow_html=True)
+m2.markdown(_mbox("Renda Anual de Dividendos",   fmt_moeda(total_renda_anual),  "#00d4aa"), unsafe_allow_html=True)
+m3.markdown(_mbox("Renda Mensal de Dividendos",  fmt_moeda(total_renda_mensal), "#00d4aa"), unsafe_allow_html=True)
+m4.markdown(_mbox("Meta Mensal",                 fmt_moeda(META_MENSAL),        "#f0a500"), unsafe_allow_html=True)
+m5.markdown(_mbox(
+    "Progresso para a Meta",
+    f"{progresso * 100:.1f}%",
+    "#00d4aa" if progresso >= 1 else "#f0a500",
+), unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("**Progresso em direção à meta de $1.000/mês:**")
@@ -130,11 +210,17 @@ st.divider()
 
 # ── Tabela detalhada do portfólio ─────────────────────────────────────────────
 with st.expander("📋 Ver detalhes do portfólio"):
-    cols_show = ["Ticker", "Ações", "Custo/Ação (USD)", "Valor Posição (USD)",
-                 "Div. Anual/Ação (USD)", "Div. Yield (%)", "Renda Anual (USD)", "Renda Mensal (USD)"]
-    cols_show = [c for c in cols_show if c in df_port.columns]
+    df_detalhe = df_port[["Ticker"]].copy()
+    df_detalhe["Ações"]                 = df_port["_acoes"]
+    df_detalhe["Custo/Ação (USD)"]      = df_port["_custo"]
+    df_detalhe["Valor Posição (USD)"]   = df_port["Valor Posição (USD)"]
+    df_detalhe["Div. Anual/Ação (USD)"] = df_port["_div"]
+    df_detalhe["Div. Yield (%)"]        = df_port["Div. Yield (%)"]
+    df_detalhe["Renda Anual (USD)"]     = df_port["Renda Anual (USD)"]
+    df_detalhe["Renda Mensal (USD)"]    = df_port["Renda Mensal (USD)"]
     st.dataframe(
-        df_port[cols_show].style.format({
+        df_detalhe.style.format({
+            "Ações":                 "{:,.6g}",
             "Custo/Ação (USD)":      "${:,.2f}",
             "Valor Posição (USD)":   "${:,.2f}",
             "Div. Anual/Ação (USD)": "${:,.4f}",
@@ -178,32 +264,32 @@ st.divider()
 if calcular or "proj_calculada" in st.session_state:
     if calcular:
         proj = projetar_renda_mensal(
-            renda_mensal_inicial    = total_renda_mensal,
-            contribuicao_mensal     = contrib_mensal,
-            crescimento_anual       = cresc_div_pct / 100,
+            renda_mensal_inicial      = total_renda_mensal,
+            contribuicao_mensal       = contrib_mensal,
+            crescimento_anual         = cresc_div_pct / 100,
             yield_novos_investimentos = yield_novos_pct / 100,
-            meses                   = 120,
+            meses                     = 120,
         )
         st.session_state["proj_calculada"] = proj
         st.session_state["proj_params"] = {
             "contrib": contrib_mensal,
-            "cresc": cresc_div_pct,
-            "yield": yield_novos_pct,
+            "cresc":   cresc_div_pct,
+            "yield":   yield_novos_pct,
         }
 
-    proj = st.session_state["proj_calculada"]
+    proj   = st.session_state["proj_calculada"]
     params = st.session_state.get("proj_params", {})
 
     st.markdown('<div class="section-title">📈 Projeção de Renda — 10 Anos</div>', unsafe_allow_html=True)
-    st.markdown(f"**Premissas:** contribuição de {fmt_moeda(params.get('contrib', contrib_mensal))}/mês · "
-                f"crescimento de dividendos de {params.get('cresc', cresc_div_pct):.1f}%/ano · "
-                f"yield em novos investimentos de {params.get('yield', yield_novos_pct):.2f}%/ano")
+    st.markdown(
+        f"**Premissas:** contribuição de {fmt_moeda(params.get('contrib', contrib_mensal))}/mês · "
+        f"crescimento de dividendos de {params.get('cresc', cresc_div_pct):.1f}%/ano · "
+        f"yield em novos investimentos de {params.get('yield', yield_novos_pct):.2f}%/ano"
+    )
 
-    # Encontrar mês em que bate $1.000
     acima_meta = proj[proj["Renda Mensal (USD)"] >= META_MENSAL]
-    mes_meta = int(acima_meta["Mês"].iloc[0]) if not acima_meta.empty else None
+    mes_meta   = int(acima_meta["Mês"].iloc[0]) if not acima_meta.empty else None
 
-    # Gráfico
     fig_proj = go.Figure()
     fig_proj.add_trace(go.Scatter(
         x=proj["Ano"], y=proj["Renda Mensal (USD)"],
@@ -212,15 +298,19 @@ if calcular or "proj_calculada" in st.session_state:
         line=dict(color="#00d4aa", width=3),
         fill="tozeroy", fillcolor="rgba(0,212,170,0.08)",
     ))
-    fig_proj.add_hline(y=META_MENSAL, line_dash="dash", line_color="#f0a500", line_width=2,
-                       annotation_text=f"Meta: ${META_MENSAL:,.0f}/mês",
-                       annotation_position="top left")
-    fig_proj.add_hline(y=total_renda_mensal, line_dash="dot", line_color="#888",
-                       annotation_text=f"Hoje: {fmt_moeda(total_renda_mensal)}/mês",
-                       annotation_position="bottom right")
+    fig_proj.add_hline(
+        y=META_MENSAL, line_dash="dash", line_color="#f0a500", line_width=2,
+        annotation_text=f"Meta: ${META_MENSAL:,.0f}/mês",
+        annotation_position="top left",
+    )
+    fig_proj.add_hline(
+        y=total_renda_mensal, line_dash="dot", line_color="#888",
+        annotation_text=f"Hoje: {fmt_moeda(total_renda_mensal)}/mês",
+        annotation_position="bottom right",
+    )
 
     if mes_meta is not None:
-        ano_meta = mes_meta / 12
+        ano_meta   = mes_meta / 12
         renda_meta = proj[proj["Mês"] == mes_meta]["Renda Mensal (USD)"].iloc[0]
         fig_proj.add_vline(x=ano_meta, line_dash="dash", line_color="#f0a500", line_width=1.5)
         fig_proj.add_trace(go.Scatter(
@@ -241,7 +331,6 @@ if calcular or "proj_calculada" in st.session_state:
     )
     st.plotly_chart(fig_proj, use_container_width=True)
 
-    # Tabela resumo por ano
     with st.expander("📋 Ver tabela de projeção anual"):
         proj_anual = proj[proj["Mês"] % 12 == 0].copy()
         proj_anual["Renda Anual (USD)"] = proj_anual["Renda Mensal (USD)"] * 12
@@ -255,17 +344,25 @@ if calcular or "proj_calculada" in st.session_state:
         )
 
     if mes_meta is not None:
-        anos_meta = mes_meta // 12
+        anos_meta  = mes_meta // 12
         meses_meta = mes_meta % 12
         renda_final = proj["Renda Mensal (USD)"].iloc[-1]
-        st.success(f"🎯 Com estas premissas, você atingirá **${META_MENSAL:,.0f}/mês** em aproximadamente "
-                   f"**{anos_meta} anos e {meses_meta} meses**.")
+        st.success(
+            f"🎯 Com estas premissas, você atingirá **${META_MENSAL:,.0f}/mês** em aproximadamente "
+            f"**{anos_meta} anos e {meses_meta} meses**."
+        )
         st.metric("Renda mensal estimada em 10 anos", fmt_moeda(renda_final))
     else:
         renda_final = proj["Renda Mensal (USD)"].iloc[-1]
-        st.warning(f"Com as premissas atuais, a renda em 10 anos será de **{fmt_moeda(renda_final)}/mês**, "
-                   f"abaixo da meta de ${META_MENSAL:,.0f}/mês. Considere aumentar a contribuição mensal "
-                   f"ou o yield alvo.")
+        st.warning(
+            f"Com as premissas atuais, a renda em 10 anos será de **{fmt_moeda(renda_final)}/mês**, "
+            f"abaixo da meta de ${META_MENSAL:,.0f}/mês. Considere aumentar a contribuição mensal "
+            f"ou o yield alvo."
+        )
 
 st.divider()
-st.caption("⚠️ Esta ferramenta é apenas para fins educacionais. Projeções são estimativas baseadas em premissas simplificadas e não garantem resultados futuros. Você é o único responsável pelas suas decisões de investimento.")
+st.caption(
+    "⚠️ Esta ferramenta é apenas para fins educacionais. Projeções são estimativas baseadas em "
+    "premissas simplificadas e não garantem resultados futuros. "
+    "Você é o único responsável pelas suas decisões de investimento."
+)
