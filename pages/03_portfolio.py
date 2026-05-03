@@ -37,15 +37,49 @@ LAYOUT_BASE = dict(
 st.markdown("# 💼 Portfólio e Projeção de Renda")
 st.markdown("Cadastre suas posições e visualize a trajetória até a meta de **$1.000/mês** em dividendos.")
 
+
+def parse_num(val) -> float | None:
+    """
+    Converte texto para float aceitando qualquer formato decimal:
+      - Vírgula decimal:   0,23545  →  0.23545
+      - Ponto decimal:     0.23545  →  0.23545
+      - BR com milhar:   1.234,56   →  1234.56
+      - US com milhar:   1,234.56   →  1234.56
+    """
+    if val is None:
+        return None
+    s = str(val).strip().replace(" ", "")
+    if s == "" or s == "nan":
+        return None
+    if "," in s and "." in s:
+        # Descobre qual é o separador decimal pelo último a aparecer
+        if s.rfind(",") > s.rfind("."):
+            # Vírgula é decimal: "1.234,56" → "1234.56"
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # Ponto é decimal: "1,234.56" → "1234.56"
+            s = s.replace(",", "")
+    else:
+        # Só um separador: trata como decimal
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 # ── Tabela de Portfólio ───────────────────────────────────────────────────────
 st.markdown('<div class="section-title">📊 Suas Posições</div>', unsafe_allow_html=True)
-st.markdown("Edite a tabela abaixo diretamente. **Dividendo Anual/Ação** = dividendo anual por ação (USD).")
+st.markdown(
+    "Edite a tabela abaixo diretamente. "
+    "**Aceita vírgula ou ponto como decimal** — ex: `0,23545` ou `0.23545`."
+)
 
 portfolio_inicial = pd.DataFrame({
-    "Ticker":              ["JNJ",  "KO",   "PG",   "ABBV", "O"],
-    "Ações":               [10,     20,     8,      15,     25],
-    "Custo/Ação (USD)":    [155.0,  60.0,   145.0,  175.0,  55.0],
-    "Div. Anual/Ação (USD)": [4.76, 1.94,   3.76,   5.92,   3.12],
+    "Ticker":                ["JNJ",    "KO",    "PG",     "ABBV",   "O"],
+    "Ações":                 ["10",     "20",    "8",      "15",     "25"],
+    "Custo/Ação (USD)":      ["155.00", "60.00", "145.00", "175.00", "55.00"],
+    "Div. Anual/Ação (USD)": ["4.76",   "1.94",  "3.76",   "5.92",   "3.12"],
 })
 
 portfolio_df = st.data_editor(
@@ -53,10 +87,10 @@ portfolio_df = st.data_editor(
     num_rows="dynamic",
     use_container_width=True,
     column_config={
-        "Ticker":              st.column_config.TextColumn("Ticker", width="small"),
-        "Ações":               st.column_config.NumberColumn("Nº de Ações", min_value=0, step=1),
-        "Custo/Ação (USD)":    st.column_config.NumberColumn("Custo/Ação (USD)", min_value=0.0, format="%.2f"),
-        "Div. Anual/Ação (USD)": st.column_config.NumberColumn("Div. Anual/Ação (USD)", min_value=0.0, format="%.4f"),
+        "Ticker":                st.column_config.TextColumn("Ticker", width="small"),
+        "Ações":                 st.column_config.TextColumn("Nº de Ações", help="Ex: 10 ou 0,23545"),
+        "Custo/Ação (USD)":      st.column_config.TextColumn("Custo/Ação (USD)", help="Ex: 155,50 ou 155.50"),
+        "Div. Anual/Ação (USD)": st.column_config.TextColumn("Div. Anual/Ação (USD)", help="Ex: 4,76 ou 4.76"),
     },
     key="portfolio_editor",
 )
@@ -84,18 +118,40 @@ with p_col3:
 calcular = st.button("📈 Calcular Projeção", type="primary")
 
 # ── Cálculos do Portfólio ─────────────────────────────────────────────────────
-df_port = portfolio_df.dropna(subset=["Ticker", "Ações", "Custo/Ação (USD)", "Div. Anual/Ação (USD)"])
-df_port = df_port[df_port["Ações"] > 0]
+df_port = portfolio_df.copy()
+
+# Converte colunas de texto para float (aceita vírgula e ponto)
+df_port["_acoes"] = df_port["Ações"].apply(parse_num)
+df_port["_custo"] = df_port["Custo/Ação (USD)"].apply(parse_num)
+df_port["_div"]   = df_port["Div. Anual/Ação (USD)"].apply(parse_num)
+
+# Remove linhas sem Ticker ou com valores inválidos/zerados
+df_port = df_port[df_port["Ticker"].notna() & (df_port["Ticker"].str.strip() != "")]
+df_port = df_port.dropna(subset=["_acoes", "_custo", "_div"])
+df_port = df_port[df_port["_acoes"] > 0]
+
+# Sinaliza valores inválidos que foram digitados mas não puderam ser convertidos
+linhas_invalidas = portfolio_df[
+    (portfolio_df["Ticker"].notna()) &
+    (portfolio_df["Ticker"].str.strip() != "") &
+    (
+        portfolio_df["Ações"].apply(parse_num).isna() |
+        portfolio_df["Custo/Ação (USD)"].apply(parse_num).isna() |
+        portfolio_df["Div. Anual/Ação (USD)"].apply(parse_num).isna()
+    )
+]
+if not linhas_invalidas.empty:
+    tickers_inv = ", ".join(linhas_invalidas["Ticker"].dropna().tolist())
+    st.warning(f"⚠️ Valores inválidos ignorados em: **{tickers_inv}**. Verifique os números digitados.")
 
 if df_port.empty:
     st.warning("Adicione ao menos uma posição válida na tabela acima.")
     st.stop()
 
-df_port = df_port.copy()
-df_port["Valor Posição (USD)"] = df_port["Ações"] * df_port["Custo/Ação (USD)"]
-df_port["Renda Anual (USD)"]   = df_port["Ações"] * df_port["Div. Anual/Ação (USD)"]
+df_port["Valor Posição (USD)"] = df_port["_acoes"] * df_port["_custo"]
+df_port["Renda Anual (USD)"]   = df_port["_acoes"] * df_port["_div"]
 df_port["Renda Mensal (USD)"]  = df_port["Renda Anual (USD)"] / 12
-df_port["Div. Yield (%)"]      = (df_port["Div. Anual/Ação (USD)"] / df_port["Custo/Ação (USD)"] * 100).round(2)
+df_port["Div. Yield (%)"]      = (df_port["_div"] / df_port["_custo"] * 100).where(df_port["_custo"] > 0).round(2)
 
 total_valor        = df_port["Valor Posição (USD)"].sum()
 total_renda_anual  = df_port["Renda Anual (USD)"].sum()
@@ -130,11 +186,17 @@ st.divider()
 
 # ── Tabela detalhada do portfólio ─────────────────────────────────────────────
 with st.expander("📋 Ver detalhes do portfólio"):
-    cols_show = ["Ticker", "Ações", "Custo/Ação (USD)", "Valor Posição (USD)",
-                 "Div. Anual/Ação (USD)", "Div. Yield (%)", "Renda Anual (USD)", "Renda Mensal (USD)"]
-    cols_show = [c for c in cols_show if c in df_port.columns]
+    df_detalhe = df_port[["Ticker"]].copy()
+    df_detalhe["Ações"]                = df_port["_acoes"]
+    df_detalhe["Custo/Ação (USD)"]     = df_port["_custo"]
+    df_detalhe["Valor Posição (USD)"]  = df_port["Valor Posição (USD)"]
+    df_detalhe["Div. Anual/Ação (USD)"]= df_port["_div"]
+    df_detalhe["Div. Yield (%)"]       = df_port["Div. Yield (%)"]
+    df_detalhe["Renda Anual (USD)"]    = df_port["Renda Anual (USD)"]
+    df_detalhe["Renda Mensal (USD)"]   = df_port["Renda Mensal (USD)"]
     st.dataframe(
-        df_port[cols_show].style.format({
+        df_detalhe.style.format({
+            "Ações":                 "{:,.6g}",
             "Custo/Ação (USD)":      "${:,.2f}",
             "Valor Posição (USD)":   "${:,.2f}",
             "Div. Anual/Ação (USD)": "${:,.4f}",
